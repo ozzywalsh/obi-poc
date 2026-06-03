@@ -1,0 +1,10 @@
+FROM golang:1.26.4 AS builder
+WORKDIR /opt/app-root/src
+COPY main.go .
+RUN go build -o sample-app main.go
+
+FROM golang:1.26.4
+COPY --from=builder /opt/app-root/src/sample-app /usr/local/bin/sample-app
+EXPOSE 8080
+USER 1001
+ENTRYPOINT ["sample-app"]
