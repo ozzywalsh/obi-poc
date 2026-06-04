@@ -220,16 +220,17 @@ OBI instruments the host kernel via eBPF and requires elevated privileges by des
 
 ### 5.2 Linux Capabilities
 
-The capability set is derived from two inputs: `spec.mode` selects the base set for the declared operation mode; `spec.additionalCapabilities` adds any user-supplied extras. The final set is their union.
+The operator looks up the base capability set for `spec.mode` from a fixed map, then appends `spec.additionalCapabilities`.
 
-```
-BASE = { BPF, PERFMON, NET_RAW }
+```go
+var modeCaps = map[EBPFAgentMode][]corev1.Capability{
+    EBPFAgentModeApplication: {BPF, PERFMON, NET_RAW, SYS_PTRACE, DAC_READ_SEARCH, CHECKPOINT_RESTORE},
+    EBPFAgentModeNetwork:     {BPF, PERFMON, NET_RAW, NET_ADMIN},
+    EBPFAgentModeFull:        {BPF, PERFMON, NET_RAW, SYS_PTRACE, DAC_READ_SEARCH, CHECKPOINT_RESTORE, NET_ADMIN},
+}
 
-APP  = BASE ∪ { SYS_PTRACE, DAC_READ_SEARCH, CHECKPOINT_RESTORE }
-NET  = BASE ∪ { NET_ADMIN }
-FULL = APP  ∪ NET
-
-final_capabilities = mode_set(spec.mode) ∪ spec.additionalCapabilities
+caps := modeCaps[spec.Mode]
+caps = append(caps, spec.AdditionalCapabilities...)
 ```
 
 | Capability | application | network | full | Rationale |
