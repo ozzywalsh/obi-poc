@@ -67,7 +67,10 @@ data:
   obi-config.yml: |
     discovery:
       instrument:
-        - k8s_namespace: sample-app
+        - k8s_namespace: tenant-alpha
+          k8s_pod_annotations:
+            obi.instrument: "true"
+        - k8s_namespace: tenant-beta
           k8s_pod_annotations:
             obi.instrument: "true"
     attributes:
