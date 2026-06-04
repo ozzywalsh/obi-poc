@@ -212,13 +212,13 @@ OBI instruments the host kernel via eBPF and requires elevated privileges by des
 
 > **Operator vs. helm chart default:** The upstream helm chart defaults to `privileged: true` — an acknowledged [developer experience shortcut](https://github.com/grafana/beyla/pull/528) for local environments such as Kind and Docker Desktop. The operator deliberately does not inherit this default. It provisions the minimal capability set required for the declared operation mode, which is the intended production posture.
 
-### 5.1 Host Namespaces
+### 6.1 Host Namespaces
 
 | Field | Value | Source | Rationale |
 |---|---|---|---|
 | `hostPID` | `true` | `CR .spec.hostPID` (default: `true`) | Required for cross-container process visibility; eBPF probes cannot resolve PIDs to workloads without it |
 
-### 5.2 Linux Capabilities
+### 6.2 Linux Capabilities
 
 The operator looks up the base capability set for `spec.mode` from a fixed map, then appends `spec.additionalCapabilities`.
 
@@ -246,7 +246,7 @@ caps = append(caps, spec.AdditionalCapabilities...)
 
 > **`SYS_ADMIN`:** Required for Go library-level trace context propagation via `bpf_probe_write_user`. Also required on AKS and EKS, where `kernel.perf_event_paranoid > 1` by default, making `PERFMON` alone insufficient. Users on self-managed clusters who do not need Go distributed tracing can omit it. The operator sets `OTEL_EBPF_ENFORCE_SYS_CAPS=1` unconditionally so that any capability mismatch surfaces immediately as a pod failure rather than silently degraded telemetry.
 
-### 5.3 Volume Mounts
+### 6.3 Volume Mounts
 
 | Volume | Type | Mount path | Rationale |
 |---|---|---|---|
@@ -254,3 +254,29 @@ caps = append(caps, spec.AdditionalCapabilities...)
 | `var-run-obi` | `emptyDir` | `/var/run/obi` | Ephemeral socket between eBPF probe and user-space agent |
 | `cgroup` | `hostPath: /sys/fs/cgroup` | `/sys/fs/cgroup` | cgroup membership resolution; maps sockets to container workloads |
 | `kernel-security` | `hostPath: /sys/kernel/security` | `/sys/kernel/security` (read-only) | Kernel lockdown mode detection; determines whether `bpf_probe_write_user` is available under Secure Boot |
+
+### 6.4 OpenShift: SecurityContextConstraints
+
+On OpenShift, pod security is governed by SCCs rather than raw Linux capabilities. The operator detects OpenShift at reconcile time and takes a different path: instead of setting `capabilities.add` on the container, it creates and manages a purpose-built `SecurityContextConstraint` and binds it directly to the agent `ServiceAccount`.
+
+This is the established pattern for OpenShift operators that deploy privileged workloads — see the [NetObserv operator](https://github.com/netobserv/netobserv-operator/blob/main/internal/controller/ebpf/internal/permissions/permissions.go) as a reference implementation.
+
+The operator does **not** assign the built-in `privileged` SCC. That SCC permits far more than OBI requires (unrestricted hostNetwork, any user, any volume type). A purpose-built SCC with only the required capabilities is the correct least-privilege approach.
+
+The generated SCC reflects the declared `spec.mode`:
+
+```go
+scc := &osv1.SecurityContextConstraints{
+    ObjectMeta: metav1.ObjectMeta{Name: cr.Name + "-scc"},
+    AllowHostPID: true,
+    AllowHostDirVolumePlugin: true,   // required for cgroup and kernel-security hostPath mounts
+    AllowedCapabilities: modeCaps[spec.Mode],
+    RunAsUser:   osv1.RunAsUserStrategyOptions{Type: osv1.RunAsUserStrategyRunAsAny},
+    SELinuxContext: osv1.SELinuxContextStrategyOptions{Type: osv1.SELinuxStrategyRunAsAny},
+    Users: []string{
+        "system:serviceaccount:" + cr.Namespace + ":" + cr.Name + "-sa",
+    },
+}
+```
+
+The SCC binds to the agent `ServiceAccount` via the `Users` field — the OpenShift-native binding mechanism, distinct from Kubernetes RBAC. `spec.additionalCapabilities` are appended to `AllowedCapabilities` using the same logic as the vanilla Kubernetes path.
