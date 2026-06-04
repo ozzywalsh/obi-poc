@@ -9,6 +9,7 @@ import (
 
 func main() {
 	http.HandleFunc("/processing", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("processing request")
 		time.Sleep(200 * time.Millisecond)
 		fmt.Fprintln(w, "ok")
 	})

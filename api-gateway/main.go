@@ -11,7 +11,7 @@ import (
 func main() {
 	processorURL := os.Getenv("PROCESSOR_URL")
 	if processorURL == "" {
-		processorURL = "http://processor/processing"
+		processorURL = "http://processor.sample-app.svc.cluster.local/processing"
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
