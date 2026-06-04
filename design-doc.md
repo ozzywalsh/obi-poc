@@ -86,7 +86,127 @@ flowchart LR
 | ClusterRole | `rules` | Operator default | `get/list/watch` on pods, nodes, services, workload resources |
 | ClusterRoleBinding | `subjects[0]` | Derived from ServiceAccount | |
 
-## 5. Security Posture
+## 5. API Specification
+
+The Go type definition below is the canonical API surface for `ClusterEBPFAgent`, expressed using kubebuilder markers. The rendered CRD manifest generated from this file is available at [`clusterebpfagent-crd.yaml`](./clusterebpfagent-crd.yaml).
+
+```go
+// EBPFAgentMode defines the set of OBI tracers to activate, which determines
+// the Linux capabilities provisioned by the operator.
+//
+// application: HTTP/gRPC application observability via uprobes.
+// network:     Network flow observability via TC programs.
+// full:        Both application and network observability.
+//
+// +kubebuilder:validation:Enum=application;network;full
+type EBPFAgentMode string
+
+const (
+	EBPFAgentModeApplication EBPFAgentMode = "application"
+	EBPFAgentModeNetwork     EBPFAgentMode = "network"
+	EBPFAgentModeFull        EBPFAgentMode = "full"
+)
+
+// ClusterEBPFAgentSpec defines the desired state of ClusterEBPFAgent.
+type ClusterEBPFAgentSpec struct {
+	// Image is the container image to use for the OBI DaemonSet.
+	// Defaults to the operator's bundled OBI image version.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// ImagePullPolicy defines the pull policy for the OBI container image.
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// ImagePullSecrets is a list of references to secrets for pulling the OBI image.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// Mode selects the OBI operation mode and determines the base Linux capability
+	// set provisioned by the operator. Defaults to application.
+	//
+	// application: provisions capabilities for HTTP/gRPC uprobe-based tracing.
+	// network:     provisions capabilities for TC-based network flow observability.
+	// full:        union of application and network capability sets.
+	//
+	// +optional
+	// +kubebuilder:default=application
+	Mode EBPFAgentMode `json:"mode,omitempty"`
+
+	// AdditionalCapabilities supplements the base capability set derived from Mode.
+	// Use this for capabilities that are not required by the declared mode but are
+	// needed for specific kernel configurations or optional OBI features, for example:
+	//
+	//   - SYS_ADMIN: required for Go library-level trace context propagation
+	//                (bpf_probe_write_user). Also required on AKS and EKS where
+	//                kernel.perf_event_paranoid > 1 by default.
+	//
+	// +optional
+	AdditionalCapabilities []corev1.Capability `json:"additionalCapabilities,omitempty"`
+
+	// HostPID controls whether the DaemonSet pods share the host PID namespace.
+	// Required for OBI to resolve eBPF probe PIDs to container workloads.
+	// Defaults to true.
+	// +optional
+	// +kubebuilder:default=true
+	HostPID bool `json:"hostPID,omitempty"`
+
+	// NodeSelector constrains which nodes the DaemonSet pods are scheduled to.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allow the DaemonSet pods to be scheduled on nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Resources defines compute resource requests and limits for the OBI container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Config is the raw OBI configuration passed through verbatim to the agent ConfigMap.
+	// The operator does not interpret or validate the content; it is mounted at
+	// /config/obi-config.yml inside the DaemonSet pod.
+	// Refer to the OBI configuration documentation for available fields.
+	// +optional
+	Config string `json:"config,omitempty"`
+}
+
+// ClusterEBPFAgentStatus defines the observed state of ClusterEBPFAgent.
+type ClusterEBPFAgentStatus struct {
+	// Conditions represent the latest available observations of the ClusterEBPFAgent state.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ObservedGeneration is the most recent generation observed for this resource.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Image is the OBI container image resolved and applied to the DaemonSet.
+	// +optional
+	Image string `json:"image,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=cebpfa
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Mode",type="string",JSONPath=".spec.mode",description="OBI operation mode"
+// +kubebuilder:printcolumn:name="Image",type="string",JSONPath=".status.image",description="Applied OBI image"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+
+// ClusterEBPFAgent is the schema for the clusterebpfagents API.
+// Each instance provisions an OBI DaemonSet and associated RBAC across the cluster.
+type ClusterEBPFAgent struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   ClusterEBPFAgentSpec   `json:"spec,omitempty"`
+	Status ClusterEBPFAgentStatus `json:"status,omitempty"`
+}
+```
+
+## 6. Security Posture
 
 OBI instruments the host kernel via eBPF and requires elevated privileges by design. This section defines exactly which privileges are granted, how they are derived, and why.
 
