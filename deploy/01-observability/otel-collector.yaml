@@ -6,6 +6,7 @@ metadata:
 spec:
   mode: deployment
   managementState: managed
+  image: otel/opentelemetry-collector-contrib:0.152.0
   config:
     receivers:
       otlp:
@@ -14,6 +15,12 @@ spec:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
+    processors:
+      transform:
+        trace_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], Concat([attributes["k8s.namespace.name"], attributes["service.name"]], "/"))
     exporters:
       debug:
         verbosity: detailed
@@ -25,4 +32,5 @@ spec:
       pipelines:
         traces:
           receivers: [otlp]
+          processors: [transform]
           exporters: [debug, otlp/jaeger]
