@@ -1,0 +1,10 @@
+FROM golang:1.26.4 AS builder
+WORKDIR /opt/app-root/src
+COPY main.go .
+RUN go build -o processor main.go
+
+FROM golang:1.26.4
+COPY --from=builder /opt/app-root/src/processor /usr/local/bin/processor
+EXPOSE 8080
+USER 1001
+ENTRYPOINT ["processor"]

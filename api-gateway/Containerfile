@@ -1,0 +1,10 @@
+FROM golang:1.26.4 AS builder
+WORKDIR /opt/app-root/src
+COPY main.go .
+RUN go build -o api-gateway main.go
+
+FROM golang:1.26.4
+COPY --from=builder /opt/app-root/src/api-gateway /usr/local/bin/api-gateway
+EXPOSE 8080
+USER 1001
+ENTRYPOINT ["api-gateway"]
