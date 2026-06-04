@@ -77,6 +77,18 @@ spec:
                   from OBIInstrumentation resources and must not be set here.
                   Refer to the OBI configuration documentation for available fields.
                 type: string
+              deploymentModel:
+                default: standalone
+                description: |-
+                  DeploymentModel selects the deployment topology. Defaults to standalone.
+
+                  standalone: runs otel/ebpf-instrumentation; spec.config is OBI daemon YAML.
+                  collector:  runs a user-provided collector image embedding the OBI receiver;
+                              spec.config is OTel Collector YAML (receivers section is reserved).
+                enum:
+                - standalone
+                - collector
+                type: string
               hostPID:
                 default: true
                 description: |-
