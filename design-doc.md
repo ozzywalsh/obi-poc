@@ -57,14 +57,13 @@ Each `ClusterEBPFAgent` CR instance is reconciled into a deterministic set of ch
 
 ```mermaid
 flowchart LR
-    CR["<b>ClusterEBPFAgent</b><br/>spec.image<br/>spec.nodeSelector<br/>spec.hostPID<br/>spec.config"]
-    ENV["<b>Environment Probe</b><br/>IsOpenShift?"]
+    CR["<b>ClusterEBPFAgent</b><br/>spec.image<br/>spec.nodeSelector<br/>spec.hostPID<br/>spec.mode<br/>spec.additionalCapabilities<br/>spec.config"]
     DEF["<b>Operator Defaults</b><br/>volumeMounts<br/>readOnlyRootFilesystem<br/>RBAC rules"]
 
-    CR -->|image, nodeSelector,\nhostPID| DS["<b>DaemonSet</b><br/>podSpec"]
+    CR -->|image, nodeSelector, hostPID| DS["<b>DaemonSet</b><br/>podSpec"]
+    CR -->|mode + additionalCapabilities| CAPS["capability set\n(see §5)"]
     CR -->|config passthrough| CM["<b>ConfigMap</b>"]
-    ENV -->|"false → capabilities:\n[BPF, SYS_PTRACE, NET_RAW\nPERFMON, SYS_ADMIN, ...]"| DS
-    ENV -->|"true → SCC:\nprivileged"| DS
+    CAPS --> DS
     DEF -->|volumes, securityContext\nbaselines| DS
     DEF -->|get/list/watch rules| RBAC["<b>ClusterRole /\nClusterRoleBinding</b>"]
     CR -->|name, namespace| SA["<b>ServiceAccount</b>"]
@@ -78,7 +77,7 @@ flowchart LR
 | DaemonSet | `spec.template.spec.containers[0].image` | `CR .spec.image` | Defaults to `otel/ebpf-instrument:v0.9.0` |
 | DaemonSet | `spec.template.spec.nodeSelector` | `CR .spec.nodeSelector` | Empty map if unset |
 | DaemonSet | `spec.template.spec.hostPID` | `CR .spec.hostPID` | Defaults to `true` |
-| DaemonSet | `spec.template.spec.containers[0].securityContext.capabilities` | Environment probe | Omitted on OpenShift; SCC used instead |
+| DaemonSet | `spec.template.spec.containers[0].securityContext.capabilities` | `CR .spec.mode` + `CR .spec.additionalCapabilities` | Derived deterministically; see §5 |
 | DaemonSet | `spec.template.spec.volumes` | Operator default | `emptyDir` (var-run-obi), `hostPath` (cgroup), `configMap` (config) |
 | DaemonSet | `spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem` | Operator default | Always `true` |
 | DaemonSet | `spec.template.spec.containers[0].securityContext.runAsUser` | Operator default | Always `0` |
@@ -86,3 +85,51 @@ flowchart LR
 | ServiceAccount | `metadata.name` | CR name (prefixed) | e.g. `<cr-name>-sa` |
 | ClusterRole | `rules` | Operator default | `get/list/watch` on pods, nodes, services, workload resources |
 | ClusterRoleBinding | `subjects[0]` | Derived from ServiceAccount | |
+
+## 5. Security Posture
+
+OBI instruments the host kernel via eBPF and requires elevated privileges by design. This section defines exactly which privileges are granted, how they are derived, and why.
+
+> **Operator vs. helm chart default:** The upstream helm chart defaults to `privileged: true` — an acknowledged [developer experience shortcut](https://github.com/grafana/beyla/pull/528) for local environments such as Kind and Docker Desktop. The operator deliberately does not inherit this default. It provisions the minimal capability set required for the declared operation mode, which is the intended production posture.
+
+### 5.1 Host Namespaces
+
+| Field | Value | Source | Rationale |
+|---|---|---|---|
+| `hostPID` | `true` | `CR .spec.hostPID` (default: `true`) | Required for cross-container process visibility; eBPF probes cannot resolve PIDs to workloads without it |
+
+### 5.2 Linux Capabilities
+
+The capability set is derived from two inputs: `spec.mode` selects the base set for the declared operation mode; `spec.additionalCapabilities` adds any user-supplied extras. The final set is their union.
+
+```
+BASE = { BPF, PERFMON, NET_RAW }
+
+APP  = BASE ∪ { SYS_PTRACE, DAC_READ_SEARCH, CHECKPOINT_RESTORE }
+NET  = BASE ∪ { NET_ADMIN }
+FULL = APP  ∪ NET
+
+final_capabilities = mode_set(spec.mode) ∪ spec.additionalCapabilities
+```
+
+| Capability | application | network | full | Rationale |
+|---|:---:|:---:|:---:|---|
+| `BPF` | ✓ | ✓ | ✓ | Load and attach eBPF programs |
+| `PERFMON` | ✓ | ✓ | ✓ | Access perf events; load BPF programs (kernel ≥ 5.8) |
+| `NET_RAW` | ✓ | ✓ | ✓ | `AF_PACKET` raw sockets for socket filter programs |
+| `SYS_PTRACE` | ✓ | — | ✓ | Access `/proc/pid/exe`; inspect ELF binaries across container namespaces |
+| `DAC_READ_SEARCH` | ✓ | — | ✓ | Access `/proc/self/mem` and ELF files across UID boundaries |
+| `CHECKPOINT_RESTORE` | ✓ | — | ✓ | Access `/proc` symlinks for process and system info |
+| `NET_ADMIN` | — | ✓ | ✓ | TC (`BPF_PROG_TYPE_SCHED_CLS`) programs for network monitoring and context propagation |
+| `SYS_ADMIN` | — | — | — | Via `spec.additionalCapabilities` only; see note below |
+
+> **`SYS_ADMIN`:** Required for Go library-level trace context propagation via `bpf_probe_write_user`. Also required on AKS and EKS, where `kernel.perf_event_paranoid > 1` by default, making `PERFMON` alone insufficient. Users on self-managed clusters who do not need Go distributed tracing can omit it. The operator sets `OTEL_EBPF_ENFORCE_SYS_CAPS=1` unconditionally so that any capability mismatch surfaces immediately as a pod failure rather than silently degraded telemetry.
+
+### 5.3 Volume Mounts
+
+| Volume | Type | Mount path | Rationale |
+|---|---|---|---|
+| `obi-config` | `ConfigMap` | `/config` (read-only) | Agent configuration passthrough |
+| `var-run-obi` | `emptyDir` | `/var/run/obi` | Ephemeral socket between eBPF probe and user-space agent |
+| `cgroup` | `hostPath: /sys/fs/cgroup` | `/sys/fs/cgroup` | cgroup membership resolution; maps sockets to container workloads |
+| `kernel-security` | `hostPath: /sys/kernel/security` | `/sys/kernel/security` (read-only) | Kernel lockdown mode detection; determines whether `bpf_probe_write_user` is available under Secure Boot |
