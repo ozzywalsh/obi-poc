@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: quay.io/ozwalsh/api-gateway:cfa3f7b
+          image: quay.io/ozwalsh/api-gateway:06753bd
           env:
             - name: PROCESSOR_URL
               value: "http://processor.sample-app.svc.cluster.local/processing"
@@ -86,7 +86,7 @@ spec:
     spec:
       containers:
         - name: processor
-          image: quay.io/ozwalsh/processor:cfa3f7b
+          image: quay.io/ozwalsh/processor:06753bd
           ports:
             - containerPort: 8080
           resources:
