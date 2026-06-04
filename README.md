@@ -1,11 +1,16 @@
-# Sample App with OBI Auto-Instrumentation
+# OBI Auto-Instrumentation Demo
 
-A minimal Go HTTP server auto-instrumented with [OBI (eBPF-based instrumentation)](https://github.com/grafana/ebpf-autoinstrument), exporting traces via an OpenTelemetry Collector.
+A distributed tracing demo using [OBI (eBPF-based instrumentation)](https://github.com/grafana/ebpf-autoinstrument) to auto-instrument Go services without code changes, exporting traces via an OpenTelemetry Collector to Jaeger.
+
+Two simulated tenants (`tenant-alpha`, `tenant-beta`) each run an `api-gateway` → `processor` call chain. OBI instruments both namespaces and the collector's transform processor prefixes `service.name` with the namespace (e.g. `tenant-alpha/api-gateway`) so traces from each tenant are distinguishable in Jaeger.
 
 ## Project Structure
 
 ```
-app/                          # Application source
+api-gateway/                  # HTTP frontend — calls processor on /hello
+  main.go
+  Containerfile
+processor/                    # HTTP backend — simulates work on /processing
   main.go
   Containerfile
 deploy/
@@ -14,9 +19,11 @@ deploy/
     opentelemetry-operator.yaml
   01-observability/           # Observability stack
     obi.yaml                  # OBI DaemonSet, ConfigMap, RBAC
-    otel-collector.yaml       # OpenTelemetryCollector CR
-  02-app/                     # Sample application
-    app.yaml                  # Namespace, Deployment, Service
+    otel-collector.yaml       # OpenTelemetryCollector CR (with transform processor)
+    jaeger.yaml               # Jaeger all-in-one + OpenShift Route
+  02-app/                     # Tenant workloads
+    tenant-alpha.yaml         # api-gateway + processor in tenant-alpha namespace
+    tenant-beta.yaml          # api-gateway + processor in tenant-beta namespace
 ```
 
 ## Setup
@@ -38,31 +45,46 @@ kubectl wait -n opentelemetry-operator-system --for=condition=Available deployme
 ```bash
 kubectl apply -f deploy/01-observability/obi.yaml
 kubectl apply -f deploy/01-observability/otel-collector.yaml
+kubectl apply -f deploy/01-observability/jaeger.yaml
 
-# On openshift, you'll also need to configure the SCC
+# On OpenShift, grant OBI the privileged SCC
 oc adm policy add-scc-to-user -n observability -z obi privileged
 ```
 
-### 3. Sample app
+### 3. Tenant apps
 
 ```bash
-kubectl apply -f deploy/02-app/app.yaml
-kubectl wait -n sample-app --for=condition=Available deployment/sample-app --timeout=120s
+kubectl apply -f deploy/02-app/tenant-alpha.yaml
+kubectl apply -f deploy/02-app/tenant-beta.yaml
+
+kubectl wait -n tenant-alpha --for=condition=Available deployment/api-gateway --timeout=120s
+kubectl wait -n tenant-beta  --for=condition=Available deployment/api-gateway --timeout=120s
 ```
 
 ### Verify
 
-Check collector logs for traces (the pod health check will make requests):
+Check that traces are flowing through the collector:
 
 ```bash
 kubectl logs -n observability deployment/otel-collector
 ```
 
-## Building the app image
+Open the Jaeger UI (OpenShift Route created automatically):
 
 ```bash
-podman build -t quay.io/<your-user>/sample-app:latest -f app/Containerfile app/
-podman push quay.io/<your-user>/sample-app:latest
+oc get route -n observability jaeger-ui
 ```
 
-Then update the image reference in `deploy/02-app/app.yaml`.
+Service names in Jaeger will appear as `tenant-alpha/api-gateway`, `tenant-alpha/processor`, etc.
+
+## Building the app images
+
+```bash
+podman build -t quay.io/<your-user>/api-gateway:latest -f api-gateway/Containerfile api-gateway/
+podman push quay.io/<your-user>/api-gateway:latest
+
+podman build -t quay.io/<your-user>/processor:latest -f processor/Containerfile processor/
+podman push quay.io/<your-user>/processor:latest
+```
+
+Then update the image references in `deploy/02-app/tenant-alpha.yaml` and `deploy/02-app/tenant-beta.yaml`.

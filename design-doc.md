@@ -50,3 +50,39 @@ graph TD
     Ctrl --> Alpha
     Ctrl --> Beta
 ```
+
+## 4. Resource Configuration Model
+
+Each `ClusterEBPFAgent` CR instance is reconciled into a deterministic set of child resources. The controller derives the final resource manifests from three input streams: the CR spec, an environment probe (OpenShift vs. vanilla Kubernetes), and hardcoded operator defaults.
+
+```mermaid
+flowchart LR
+    CR["<b>ClusterEBPFAgent</b><br/>spec.image<br/>spec.nodeSelector<br/>spec.hostPID<br/>spec.config"]
+    ENV["<b>Environment Probe</b><br/>IsOpenShift?"]
+    DEF["<b>Operator Defaults</b><br/>volumeMounts<br/>readOnlyRootFilesystem<br/>RBAC rules"]
+
+    CR -->|image, nodeSelector,\nhostPID| DS["<b>DaemonSet</b><br/>podSpec"]
+    CR -->|config passthrough| CM["<b>ConfigMap</b>"]
+    ENV -->|"false → capabilities:\n[BPF, SYS_PTRACE, NET_RAW\nPERFMON, SYS_ADMIN, ...]"| DS
+    ENV -->|"true → SCC:\nprivileged"| DS
+    DEF -->|volumes, securityContext\nbaselines| DS
+    DEF -->|get/list/watch rules| RBAC["<b>ClusterRole /\nClusterRoleBinding</b>"]
+    CR -->|name, namespace| SA["<b>ServiceAccount</b>"]
+    SA --> RBAC
+```
+
+### Field Mapping
+
+| Output resource | Field | Source | Notes |
+|---|---|---|---|
+| DaemonSet | `spec.template.spec.containers[0].image` | `CR .spec.image` | Defaults to `otel/ebpf-instrument:v0.9.0` |
+| DaemonSet | `spec.template.spec.nodeSelector` | `CR .spec.nodeSelector` | Empty map if unset |
+| DaemonSet | `spec.template.spec.hostPID` | `CR .spec.hostPID` | Defaults to `true` |
+| DaemonSet | `spec.template.spec.containers[0].securityContext.capabilities` | Environment probe | Omitted on OpenShift; SCC used instead |
+| DaemonSet | `spec.template.spec.volumes` | Operator default | `emptyDir` (var-run-obi), `hostPath` (cgroup), `configMap` (config) |
+| DaemonSet | `spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem` | Operator default | Always `true` |
+| DaemonSet | `spec.template.spec.containers[0].securityContext.runAsUser` | Operator default | Always `0` |
+| ConfigMap | `data["obi-config.yml"]` | `CR .spec.config` | Untyped passthrough; operator does not interpret content |
+| ServiceAccount | `metadata.name` | CR name (prefixed) | e.g. `<cr-name>-sa` |
+| ClusterRole | `rules` | Operator default | `get/list/watch` on pods, nodes, services, workload resources |
+| ClusterRoleBinding | `subjects[0]` | Derived from ServiceAccount | |
