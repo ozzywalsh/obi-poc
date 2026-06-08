@@ -15,8 +15,10 @@ deploy/
   01-observability/           # Observability stack
     obi.yaml                  # OBI DaemonSet, ConfigMap, RBAC
     otel-collector.yaml       # OpenTelemetryCollector CR
-  02-app/                     # Sample application
-    app.yaml                  # Namespace, Deployment, Service
+    jaeger.yaml               # Jaeger all-in-one for trace visualization
+  02-app/                     # Sample applications (multi-tenant)
+    tenant-alpha.yaml          # Tenant Alpha namespace, deployments, services
+    tenant-beta.yaml           # Tenant Beta namespace, deployments, services
 ```
 
 ## Setup
@@ -43,11 +45,16 @@ kubectl apply -f deploy/01-observability/otel-collector.yaml
 oc adm policy add-scc-to-user -n observability -z obi privileged
 ```
 
-### 3. Sample app
+### 3. Sample apps (multi-tenant)
+
+The sample apps are deployed across two namespaces (`tenant-alpha` and `tenant-beta`) to demonstrate multi-tenant instrumentation. Each namespace runs its own set of services (api-gateway, processor).
 
 ```bash
-kubectl apply -f deploy/02-app/app.yaml
-kubectl wait -n sample-app --for=condition=Available deployment/sample-app --timeout=120s
+kubectl apply -f deploy/02-app/tenant-alpha.yaml
+kubectl apply -f deploy/02-app/tenant-beta.yaml
+
+kubectl wait -n tenant-alpha --for=condition=Available deployment/api-gateway --timeout=120s
+kubectl wait -n tenant-beta --for=condition=Available deployment/api-gateway --timeout=120s
 ```
 
 ### Verify
@@ -58,6 +65,13 @@ Check collector logs for traces (the pod health check will make requests):
 kubectl logs -n observability deployment/otel-collector
 ```
 
+View traces in Jaeger:
+
+```bash
+kubectl port-forward -n observability svc/jaeger 16686:16686
+# Open http://localhost:16686
+```
+
 ## Building the app image
 
 ```bash
@@ -65,4 +79,8 @@ podman build -t quay.io/<your-user>/sample-app:latest -f app/Containerfile app/
 podman push quay.io/<your-user>/sample-app:latest
 ```
 
-Then update the image reference in `deploy/02-app/app.yaml`.
+Then update the image references in `deploy/02-app/tenant-alpha.yaml` and `deploy/02-app/tenant-beta.yaml`.
+
+## Known Limitations
+
+OBI does not work in Kubernetes-in-Docker setups (e.g. kind). OBI's eBPF instrumentation requires access to the host kernel, which is not available when Kubernetes nodes run as Docker containers. Use a VM-based cluster (e.g. minikube with the kvm2 driver, or a bare-metal/cloud cluster) instead.
